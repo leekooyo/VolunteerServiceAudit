@@ -1,2 +1,0 @@
-# VolunteerServiceAudit
-基于Pyqt5的志愿汇审核脚本
