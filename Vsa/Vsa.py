@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 import sys
 import pandas as pd
-from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QPushButton, QLabel, QLineEdit, QMessageBox
 from PyQt5.QtGui import QIcon
-# -*- coding: utf-8 -*-
+from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QPushButton, QLabel, QLineEdit, QMessageBox
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -101,7 +102,8 @@ class MainWindow(QMainWindow):
     # 保存阈值
     def saveFloat(self):
         try:
-            float_number = float(self.textbox.text())
+            self.float_number = float(self.textbox.text())
+            QMessageBox.information(self, "提示", f"已保存志愿时长阈值为{self.float_number}")
             # 在这里可以将该数字存储到一个变量或者数据库中
         except ValueError:
             QMessageBox.warning(self, "警告", "输入数据异常")
@@ -118,7 +120,7 @@ class MainWindow(QMainWindow):
     def get_participant_file(self):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        filename, _ = QFileDialog.getOpenFileName(self, "选择参与者名单", "", "Excel Files (*.xlsx);;Excel Files (*.xls)",
+        filename, _ = QFileDialog.getOpenFileName(self, "选择参与者名单", "", "Excel Files (*.xlsx *.xls)",
                                                   options=options)
         if filename:
             self.participant_path_label.setText(filename)
@@ -131,11 +133,6 @@ class MainWindow(QMainWindow):
         if output_name == "":
             QMessageBox.warning(self, "警告", "输出文件名不能为空")
             return
-        # 检查输出文件名是否合法
-        '''ext = (".xlsx", ".xls")
-        if not output_name.endswith(ext):
-            QMessageBox.warning(self, "警告", "输出文件名必须以.xlsx结尾")
-            return'''
         # 保存输出文件名为类属性
         self.output_Normal_name = output_name
         # 显示提示信息
@@ -149,11 +146,6 @@ class MainWindow(QMainWindow):
         if output_name == "":
             QMessageBox.warning(self, "警告", "输出文件名不能为空")
             return
-        '''# 检查输出文件名是否合法
-        ext = (".xlsx", ".xls")
-        if not output_name.endswith(ext):
-            QMessageBox.warning(self, "警告", "输出文件名必须以.xlsx结尾")
-            return'''
         # 保存输出文件名为类属性
         self.output_Error_name = output_name
         # 显示提示信息
@@ -165,55 +157,66 @@ class MainWindow(QMainWindow):
         if selected_directory:
             # do something with the selected folder
             self.folder_path_label.setText(selected_directory)
+            self.selected_directory = selected_directory
 
-    # 生成
+    # 定义一个函数，用来处理签到和参与的数据
+    def process_data(self, participants_df, signers_df, credit_hour):
+        """
+        参数：
+        participants_df: 一个数据框，包含所有参与者的姓名和班级
+        signers_df: 一个数据框，包含签到者的姓名和信用时数
+        credit_hour: 一个浮点数，表示信用时数的要求
+
+        返回值：
+        combined_df: 一个数据框，包含异常人员名单和异常原因
+        merged_df: 一个数据框，包含正常签到名单和班级、信用时数信息
+        """
+
+        # 筛选出异常人员名单
+        # 使用query函数来代替布尔索引，更简洁和快速
+        not_signed_df = participants_df.query('姓名 not in @signers_df.姓名').copy()
+        not_participated_df = signers_df.query('姓名 not in @participants_df.姓名').copy()
+        not_checked_out_df = signers_df.query('信用时数 == 0 and 姓名 in @participants_df.姓名').copy()
+        exceeded_df = signers_df.query('信用时数 > @credit_hour and 姓名 in @participants_df.姓名').copy()
+
+        # 在筛选数据框的时候添加异常原因列
+        not_signed_df['异常原因'] = '未签到'
+        not_participated_df['异常原因'] = '未参与'
+        not_checked_out_df['异常原因'] = '未签退'
+        exceeded_df['异常原因'] = '信用时数超过要求'
+
+        # 将四个数据框合并到一个数据框中
+        combined_df = pd.concat([not_signed_df, not_participated_df, not_checked_out_df, exceeded_df])
+
+        # 筛选出正常签到数据框
+        normal_signers_df = signers_df.query(
+            '姓名 in @participants_df.姓名 and 信用时数 > 0 and 信用时数 <= @credit_hour')\
+        #    .merge(participants_df[['姓名', '班级']], on='姓名', how='left').copy()
+
+        # 使用merge函数，根据姓名列来合并normal_signers_df和participants_df的部分列
+        # on参数表示要合并的键，how参数表示合并的方式，left表示以左边的数据框为基准
+        merged_df = normal_signers_df.merge(participants_df[['姓名', '班级']], on='姓名', how='left')
+
+        # 返回两个数据框
+        return combined_df, merged_df
+
     def generate(self):
         participant_file_path = self.participant_path_label.text()
         duration_file_path = self.duration_path_label.text()
-        if participant_file_path and duration_file_path:
+        if participant_file_path and duration_file_path and self.selected_directory and self.float_number:
             participants_df = pd.read_excel(participant_file_path)
             signers_df = pd.read_excel(duration_file_path)
         else:
-            return 0
+            QMessageBox.warning(self, "警告", "请选择源文件")
+            return
 
-        # 筛选参与者中未签到的人
-        not_signed_df = participants_df[~participants_df['姓名'].isin(signers_df['姓名'])]
+        combined_df, merged_df = self.process_data(participants_df, signers_df, self.float_number)
+        # 保存到Excel文件
+        with pd.ExcelWriter(f'{self.selected_directory}//{self.output_Normal_name}.xlsx', mode='w') as writer:
+            merged_df.to_excel(writer, index=False)
 
-        # 筛选签到者中未参与活动的人
-        not_participated_df = signers_df[~signers_df['姓名'].isin(participants_df['姓名'])]
-
-        # 筛选签到者中未签退的人
-        not_checked_out_df = signers_df[(signers_df['信用时数'] == 0) & (~signers_df['姓名'].isin(not_participated_df['姓名']))]
-
-        # 筛选签到者中信用时数超过要求的人
-        credit_hour = self.float_number
-        exceeded_df = signers_df[
-            (signers_df['信用时数'] > credit_hour) & (~signers_df['姓名'].isin(not_participated_df['姓名']))]
-
-        # 输出异常签到名单
-        with pd.ExcelWriter(f'{self.selected_directory}+{self.output_Error_name}.xlsx') as writer:
-            not_signed_df.to_excel(writer, sheet_name='未签到')
-            not_participated_df.to_excel(writer, sheet_name='未参与')
-            not_checked_out_df.to_excel(writer, sheet_name='未签退')
-            exceeded_df.to_excel(writer, sheet_name='信用时数超过要求')
-
-        # 筛选正常签到人员
-        normal_signers_df = signers_df[
-            signers_df['姓名'].isin(participants_df['姓名']) & (signers_df['信用时数'] > 0) & (
-                    signers_df['信用时数'] <= self.saveFloat())]
-
-        # 输出正常签到名单
-        with pd.ExcelWriter(f'{self.selected_directory}+{self.output_Normal_name}.xlsx') as writer:
-            # 根据姓名在参与者表单中查找班级
-            normal_signers_df['班级'] = normal_signers_df['姓名'].apply(
-                lambda x: participants_df[participants_df['姓名'] == x]['班级'].values[0] if len(
-                    participants_df[participants_df['姓名'] == x]) > 0 else 'null')
-            # 根据姓名在签到者表单中查找信用时数
-            normal_signers_df['信用时数'] = normal_signers_df['姓名'].apply(
-                lambda x: signers_df[signers_df['姓名'] == x]['信用时数'].values[0] if len(
-                    signers_df[signers_df['姓名'] == x]) > 0 else 'null')
-            # 输出到名为“正常签到名单”的xlsx文件
-            normal_signers_df.to_excel(writer, index=False)
+        with pd.ExcelWriter(f'{self.selected_directory}//{self.output_Error_name}.xlsx') as writer:
+            combined_df.to_excel(writer, index=False)
 
 
 if __name__ == '__main__':
